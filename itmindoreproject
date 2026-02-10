@@ -1,0 +1,153 @@
+#include <SPI.h>
+#include <Ethernet.h>
+
+#define RELAY 9
+#define QR_BAUD 115200
+
+#define QR_BUF 128
+#define TCP_BUF 128
+
+EthernetServer server(6000);
+EthernetClient client;
+
+// ------------ QR VARIABLES ------------
+char qrBuffer[QR_BUF];
+uint8_t qrIndex = 0;
+
+unsigned long lastQRByteTime = 0;
+const unsigned long qrTimeout = 25;   // ms
+
+// ------------ TCP VARIABLES ------------
+char tcpBuffer[TCP_BUF];
+uint8_t tcpIndex = 0;
+
+unsigned long lastHeartbeat = 0;
+const unsigned long heartbeatInterval = 3000;
+
+// ------------ NETWORK CONFIG (scanner-3) ------------
+byte mac[] = { 0xCD, 0xAD, 0xBE, 0xEF, 0xFE, 0x03 };
+IPAddress ip(192, 168, 60, 15);
+
+// ------------ UTIL FUNCTIONS ------------
+void clearQRBuffer() {
+  memset(qrBuffer, 0, QR_BUF);
+  qrIndex = 0;
+}
+
+void clearTCPBuffer() {
+  memset(tcpBuffer, 0, TCP_BUF);
+  tcpIndex = 0;
+}
+
+// Trim spaces, CR, LF
+void trimString(char *str) {
+  while (*str == '\r' || *str == '\n' || *str == ' ')
+    memmove(str, str + 1, strlen(str));
+
+  int len = strlen(str);
+  while (len > 0 && (str[len - 1] == '\r' || str[len - 1] == '\n' || str[len - 1] == ' '))
+    str[--len] = '\0';
+}
+
+// Remove duplicated QR (first half == second half)
+void removeDuplicateQR(char *data) {
+  int len = strlen(data);
+
+  if (len % 2 == 0) {
+    int half = len / 2;
+
+    if (strncmp(data, data + half, half) == 0) {
+      data[half] = '\0';
+    }
+  }
+}
+
+// ------------ SETUP ------------
+void setup() {
+  Serial.begin(9600);
+  Serial1.begin(QR_BAUD);
+
+  pinMode(RELAY, OUTPUT);
+  digitalWrite(RELAY, HIGH);
+
+  Ethernet.begin(mac, ip);
+  server.begin();
+
+  Serial.print("TCP Server running at IP: ");
+  Serial.println(Ethernet.localIP());
+}
+
+// ------------ LOOP ------------
+void loop() {
+
+  // Accept client
+  if (!client || !client.connected()) {
+    client = server.available();
+  }
+
+  // -------- QR SCANNER READ (TIMEOUT BASED) --------
+  while (Serial1.available()) {
+    char c = Serial1.read();
+    Serial.print(c);  // raw data
+
+    lastQRByteTime = millis();
+
+    if (qrIndex < QR_BUF - 1) {
+      qrBuffer[qrIndex++] = c;
+    }
+  }
+
+  // If data stopped coming -> QR finished
+  if (qrIndex > 0 && (millis() - lastQRByteTime > qrTimeout)) {
+
+    qrBuffer[qrIndex] = '\0';
+
+    trimString(qrBuffer);
+    removeDuplicateQR(qrBuffer);
+
+    Serial.print("\nQR Data: ");
+    Serial.println(qrBuffer);
+
+    if (client.connected()) {
+      client.print("|ENQR-");
+      client.print(qrBuffer);
+      client.print("%\n");
+    }
+
+    clearQRBuffer();
+  }
+
+
+  // -------- HEARTBEAT --------
+  if (millis() - lastHeartbeat > heartbeatInterval) {
+    lastHeartbeat = millis();
+    if (client.connected()) {
+      client.print("|HLT%\n");
+    }
+  }
+
+  // -------- TCP COMMAND READ --------
+  while (client.connected() && client.available()) {
+    char c = client.read();
+
+    if (tcpIndex < TCP_BUF - 1) {
+      tcpBuffer[tcpIndex++] = c;
+    }
+
+    if (c == '%') {
+      tcpBuffer[tcpIndex] = '\0';
+
+      if (strncmp(tcpBuffer, "|OPEN", 5) == 0) {
+        Serial.println("OPEN COMMAND RECEIVED");
+
+        client.print("|OK%\n");
+
+        digitalWrite(RELAY, LOW);
+        delay(1000);
+        digitalWrite(RELAY, HIGH);
+      }
+
+      clearTCPBuffer();
+    }
+  }
+}
