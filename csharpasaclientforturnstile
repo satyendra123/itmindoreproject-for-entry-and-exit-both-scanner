@@ -1,0 +1,207 @@
+using System;
+using System.IO;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using MySql.Data.MySqlClient;
+
+class TcpQrClient
+{
+    static TcpClient client;
+    static NetworkStream stream;
+
+    static string serverIp;
+    static int serverPort;
+    static string connString;
+
+    static int retryMillisec;
+    static string gateId;
+    static bool debugLog;
+
+    static string configPath = "config.txt";
+    static string logPath = "connectivitylog.txt";
+
+    static byte[] buffer = new byte[1024];
+    static StringBuilder packetBuffer = new StringBuilder();
+
+    static void Main()
+    {
+        LoadConfig();
+
+        while (true)
+        {
+            try
+            {
+                ConnectToArduino();
+                ListenForQrPackets();
+            }
+            catch (Exception ex)
+            {
+                Log("Error: " + ex.Message);
+            }
+            finally
+            {
+                stream?.Close();
+                client?.Close();
+                Log($"Disconnected. Reconnecting in {retryMillisec} ms...");
+                Thread.Sleep(retryMillisec);
+            }
+        }
+    }
+
+    static void ConnectToArduino()
+    {
+        Log($"Connecting to {serverIp}:{serverPort}");
+        client = new TcpClient(serverIp, serverPort);
+        stream = client.GetStream();
+        Log("Connected to Arduino");
+    }
+
+    static void ListenForQrPackets()
+    {
+        while (client.Connected)
+        {
+            int bytesRead = stream.Read(buffer, 0, buffer.Length);
+            if (bytesRead <= 0) continue;
+
+            string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
+            packetBuffer.Append(data);
+
+            while (packetBuffer.ToString().Contains("%"))
+            {
+                int endIndex = packetBuffer.ToString().IndexOf('%');
+                string packet = packetBuffer.ToString().Substring(0, endIndex + 1);
+                packetBuffer.Remove(0, endIndex + 1);
+
+                ProcessPacket(packet.Trim());
+            }
+        }
+    }
+
+    static void ProcessPacket(string packet)
+    {
+        Log("Received: " + packet);
+        Console.WriteLine("Received: " + packet);
+
+        if (!packet.StartsWith("|") || !packet.EndsWith("%"))
+            return;
+
+        try
+        {
+            if (packet.StartsWith("|ENQR-"))
+            {
+                string qr = packet.Replace("|ENQR-", "").Replace("%", "");
+                HandleQr(qr, "IN");
+            }
+            else if (packet.StartsWith("|EXQR-"))
+            {
+                string qr = packet.Replace("|EXQR-", "").Replace("%", "");
+                HandleQr(qr, "OUT");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("Packet Processing Error: " + ex.Message);
+        }
+    }
+
+    static void HandleQr(string qrData, string type)
+    {
+        Log($"QR Data: {qrData} Type: {type}");
+
+        using (MySqlConnection conn = new MySqlConnection(connString))
+        {
+            conn.Open();
+
+            string checkQuery = "SELECT vrollno FROM student WHERE reg=@qr";
+            using (MySqlCommand cmd = new MySqlCommand(checkQuery, conn))
+            {
+                cmd.Parameters.AddWithValue("@qr", qrData);
+                var result = cmd.ExecuteScalar();
+
+                if (result != null)
+                {
+                    Log("Student Found. Logging and opening gate.");
+
+                    string insertLog = @"INSERT INTO lib_logs 
+                        (vrollno, vtype, ddatetime, vdeviceid, dcreateon) 
+                        VALUES (@roll, @type, NOW(), @dev, NOW())";
+
+                    using (MySqlCommand logCmd = new MySqlCommand(insertLog, conn))
+                    {
+                        logCmd.Parameters.AddWithValue("@roll", qrData);
+                        logCmd.Parameters.AddWithValue("@type", type);
+                        logCmd.Parameters.AddWithValue("@dev", gateId);
+                        logCmd.ExecuteNonQuery();
+                    }
+
+                    SendOpenCommand(type);
+                }
+                else
+                {
+                    Log("QR Not Found in student table");
+                }
+            }
+        }
+    }
+
+    static void SendOpenCommand(string type)
+    {
+        string cmd = type == "IN" ? "|OPEN%" : "|OPEX%";
+        byte[] data = Encoding.ASCII.GetBytes(cmd);
+        stream.Write(data, 0, data.Length);
+        Log("Sent to Arduino: " + cmd);
+    }
+
+    static void LoadConfig()
+    {
+        var lines = File.ReadAllLines(configPath);
+
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line) || !line.Contains("="))
+                continue;
+
+            var parts = line.Split('=', 2);
+            string key = parts[0].Trim();
+            string value = parts[1].Trim();
+
+            switch (key)
+            {
+                case "DbPath":
+                    connString = value;
+                    break;
+
+                case "Server_IP":
+                    serverIp = value;
+                    break;
+
+                case "Port":
+                    serverPort = int.Parse(value);
+                    break;
+
+                case "Retry_milisec":
+                    retryMillisec = int.Parse(value);
+                    break;
+
+                case "Gate":
+                    gateId = value;
+                    break;
+
+                case "DebugLog":
+                    debugLog = value.Equals("True", StringComparison.OrdinalIgnoreCase);
+                    break;
+            }
+        }
+
+        Log("Configuration Loaded Successfully");
+    }
+
+    static void Log(string msg)
+    {
+        if (!debugLog) return;
+
+        File.AppendAllText(logPath,
+            $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\n");
+    }
+}
