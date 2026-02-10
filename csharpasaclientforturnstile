@@ -27,13 +27,14 @@ class TcpQrClient
     static void Main()
     {
         LoadConfig();
+        TestDatabaseConnection();
 
         while (true)
         {
             try
             {
                 ConnectToArduino();
-                ListenForQrPackets();
+                ListenForPackets();
             }
             catch (Exception ex)
             {
@@ -41,67 +42,113 @@ class TcpQrClient
             }
             finally
             {
-                stream?.Close();
-                client?.Close();
+                try { stream?.Close(); } catch { }
+                try { client?.Close(); } catch { }
+
                 Log($"Disconnected. Reconnecting in {retryMillisec} ms...");
                 Thread.Sleep(retryMillisec);
             }
         }
     }
 
+    static void TestDatabaseConnection()
+    {
+        try
+        {
+            using (MySqlConnection conn = new MySqlConnection(connString))
+            {
+                conn.Open();
+                Log("Database Connected Successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("Database Connection FAILED: " + ex.Message);
+        }
+    }
     static void ConnectToArduino()
     {
         Log($"Connecting to {serverIp}:{serverPort}");
-        client = new TcpClient(serverIp, serverPort);
+
+        client = new TcpClient();
+        client.Connect(serverIp, serverPort);
+
         stream = client.GetStream();
+
         Log("Connected to Arduino");
+
+        // 🔥 Trigger Arduino read loop (like Hercules)
+        byte[] trigger = Encoding.ASCII.GetBytes("|PING%");
+        stream.Write(trigger, 0, trigger.Length);
+        Log("Sent initial trigger |PING%");
     }
 
-    static void ListenForQrPackets()
+
+    // ✅ Proper TCP blocking read (like Hercules)
+    static void ListenForPackets()
     {
-        while (client.Connected)
+        while (true)
         {
             int bytesRead = stream.Read(buffer, 0, buffer.Length);
-            if (bytesRead <= 0) continue;
+
+            if (bytesRead <= 0)
+                throw new Exception("Arduino disconnected");
 
             string data = Encoding.ASCII.GetString(buffer, 0, bytesRead);
             packetBuffer.Append(data);
 
-            while (packetBuffer.ToString().Contains("%"))
-            {
-                int endIndex = packetBuffer.ToString().IndexOf('%');
-                string packet = packetBuffer.ToString().Substring(0, endIndex + 1);
-                packetBuffer.Remove(0, endIndex + 1);
+            ProcessBuffer();
+        }
+    }
 
-                ProcessPacket(packet.Trim());
+    // ✅ Industrial packet parser
+    static void ProcessBuffer()
+    {
+        while (true)
+        {
+            string buf = packetBuffer.ToString();
+
+            int start = buf.IndexOf('|');
+            if (start == -1)
+            {
+                packetBuffer.Clear();
+                return;
             }
+
+            int end = buf.IndexOf('%', start);
+            if (end == -1)
+                return;
+
+            string packet = buf.Substring(start, end - start + 1);
+            packetBuffer.Remove(0, end + 1);
+
+            ProcessPacket(packet);
         }
     }
 
     static void ProcessPacket(string packet)
     {
-        Log("Received: " + packet);
-        Console.WriteLine("Received: " + packet);
+        packet = packet.Trim();
 
-        if (!packet.StartsWith("|") || !packet.EndsWith("%"))
-            return;
+        Log("Received Packet: " + packet);
+        Console.WriteLine(packet);
 
         try
         {
             if (packet.StartsWith("|ENQR-"))
             {
-                string qr = packet.Replace("|ENQR-", "").Replace("%", "");
+                string qr = packet.Replace("|ENQR-", "").Replace("%", "").Trim();
                 HandleQr(qr, "IN");
             }
             else if (packet.StartsWith("|EXQR-"))
             {
-                string qr = packet.Replace("|EXQR-", "").Replace("%", "");
+                string qr = packet.Replace("|EXQR-", "").Replace("%", "").Trim();
                 HandleQr(qr, "OUT");
             }
         }
         catch (Exception ex)
         {
-            Log("Packet Processing Error: " + ex.Message);
+            Log("Packet Error: " + ex.Message);
         }
     }
 
@@ -113,7 +160,7 @@ class TcpQrClient
         {
             conn.Open();
 
-            string checkQuery = "SELECT vrollno FROM student WHERE reg=@qr";
+            string checkQuery = "SELECT vrollno FROM student WHERE reg=@qr LIMIT 1";
             using (MySqlCommand cmd = new MySqlCommand(checkQuery, conn))
             {
                 cmd.Parameters.AddWithValue("@qr", qrData);
@@ -121,7 +168,9 @@ class TcpQrClient
 
                 if (result != null)
                 {
-                    Log("Student Found. Logging and opening gate.");
+                    string vrollno = result.ToString();
+
+                    Log($"Student Found: {vrollno}");
 
                     string insertLog = @"INSERT INTO lib_logs 
                         (vrollno, vtype, ddatetime, vdeviceid, dcreateon) 
@@ -129,28 +178,34 @@ class TcpQrClient
 
                     using (MySqlCommand logCmd = new MySqlCommand(insertLog, conn))
                     {
-                        logCmd.Parameters.AddWithValue("@roll", qrData);
+                        logCmd.Parameters.AddWithValue("@roll", vrollno);
                         logCmd.Parameters.AddWithValue("@type", type);
                         logCmd.Parameters.AddWithValue("@dev", gateId);
                         logCmd.ExecuteNonQuery();
                     }
 
-                    SendOpenCommand(type);
+                    SendOpenCommand();
                 }
                 else
                 {
-                    Log("QR Not Found in student table");
+                    Log("QR Not Found in DB");
                 }
             }
         }
     }
 
-    static void SendOpenCommand(string type)
+    static void SendOpenCommand()
     {
-        string cmd = type == "IN" ? "|OPEN%" : "|OPEX%";
-        byte[] data = Encoding.ASCII.GetBytes(cmd);
-        stream.Write(data, 0, data.Length);
-        Log("Sent to Arduino: " + cmd);
+        try
+        {
+            byte[] data = Encoding.ASCII.GetBytes("|OPEN%");
+            stream.Write(data, 0, data.Length);
+            Log("Sent: |OPEN%");
+        }
+        catch (Exception ex)
+        {
+            Log("Send Error: " + ex.Message);
+        }
     }
 
     static void LoadConfig()
@@ -168,29 +223,12 @@ class TcpQrClient
 
             switch (key)
             {
-                case "DbPath":
-                    connString = value;
-                    break;
-
-                case "Server_IP":
-                    serverIp = value;
-                    break;
-
-                case "Port":
-                    serverPort = int.Parse(value);
-                    break;
-
-                case "Retry_milisec":
-                    retryMillisec = int.Parse(value);
-                    break;
-
-                case "Gate":
-                    gateId = value;
-                    break;
-
-                case "DebugLog":
-                    debugLog = value.Equals("True", StringComparison.OrdinalIgnoreCase);
-                    break;
+                case "DbPath": connString = value; break;
+                case "Server_IP": serverIp = value; break;
+                case "Port": serverPort = int.Parse(value); break;
+                case "Retry_milisec": retryMillisec = int.Parse(value); break;
+                case "Gate": gateId = value; break;
+                case "DebugLog": debugLog = value.Equals("True", StringComparison.OrdinalIgnoreCase); break;
             }
         }
 
