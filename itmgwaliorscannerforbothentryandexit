@@ -2,6 +2,7 @@
 #include <Ethernet.h>
 
 #define RELAY 9
+#define EXIT_RELAY 10
 #define QR_BAUD 115200
 
 #define QR_BUF 128
@@ -74,6 +75,9 @@ void setup() {
 
   pinMode(RELAY, OUTPUT);
   digitalWrite(RELAY, HIGH);
+
+    pinMode(EXIT_RELAY, OUTPUT);
+  digitalWrite(EXIT_RELAY, HIGH);
 
   Ethernet.begin(mac, ip);
   server.begin();
@@ -162,9 +166,9 @@ if (c == '%') {
       if (strncmp(tcpBuffer, "|OPEN", 5) == 0) {
         Serial.println("OPEN ENTRY RELAY");
         client.print("|OK%\n");
-        digitalWrite(RELAY, LOW);
+        digitalWrite(EXIT_RELAY, LOW);
         delay(1000);
-        digitalWrite(RELAY, HIGH);
+        digitalWrite(EXIT_RELAY, HIGH);
       }
       else if (strncmp(tcpBuffer, "|OPENX", 6) == 0) {
         Serial.println("OPEN EXIT RELAY");
