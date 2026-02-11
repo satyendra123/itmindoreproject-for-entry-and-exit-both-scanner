@@ -165,14 +165,14 @@ if (c == '%') {
 if (strcmp(tcpBuffer, "|OPENX%") == 0) {
     Serial.println("OPEN EXIT RELAY");
     client.print("|OK%\n");
-    digitalWrite(EXIT_RELAY, LOW);
+    digitalWrite(EXIT_RELAY,LOW);
     delay(1000);
     digitalWrite(EXIT_RELAY, HIGH);
 }
 else if (strcmp(tcpBuffer, "|OPEN%") == 0) {
     Serial.println("OPEN ENTRY RELAY");
     client.print("|OK%\n");
-    digitalWrite(RELAY, LOW);
+    digitalWrite(RELAY,LOW);
     delay(1000);
     digitalWrite(RELAY, HIGH);
 }
