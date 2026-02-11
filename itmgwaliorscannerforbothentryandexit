@@ -158,25 +158,24 @@ void loop() {
     if (tcpIndex < TCP_BUF - 1) tcpBuffer[tcpIndex++] = c;
 if (c == '%') {
   tcpBuffer[tcpIndex] = '\0';
-
   trimTCPBuffer(tcpBuffer);
+  Serial.print("\nTCP RECEIVED: "); 
+  Serial.println(tcpBuffer);
 
-  Serial.print("\nTCP RECEIVED: "); Serial.println(tcpBuffer);
-
-      if (strncmp(tcpBuffer, "|OPEN", 5) == 0) {
-        Serial.println("OPEN ENTRY RELAY");
-        client.print("|OK%\n");
-        digitalWrite(EXIT_RELAY, LOW);
-        delay(1000);
-        digitalWrite(EXIT_RELAY, HIGH);
-      }
-      else if (strncmp(tcpBuffer, "|OPENX", 6) == 0) {
-        Serial.println("OPEN EXIT RELAY");
-        client.print("|OK%\n");
-        digitalWrite(RELAY, LOW);
-        delay(1000);
-        digitalWrite(RELAY, HIGH);
-      }
+if (strcmp(tcpBuffer, "|OPENX%") == 0) {
+    Serial.println("OPEN EXIT RELAY");
+    client.print("|OK%\n");
+    digitalWrite(EXIT_RELAY, LOW);
+    delay(1000);
+    digitalWrite(EXIT_RELAY, HIGH);
+}
+else if (strcmp(tcpBuffer, "|OPEN%") == 0) {
+    Serial.println("OPEN ENTRY RELAY");
+    client.print("|OK%\n");
+    digitalWrite(RELAY, LOW);
+    delay(1000);
+    digitalWrite(RELAY, HIGH);
+}
 
       memset(tcpBuffer, 0, TCP_BUF);
       tcpIndex = 0;
