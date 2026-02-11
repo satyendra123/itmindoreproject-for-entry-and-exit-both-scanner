@@ -11,13 +11,15 @@
 EthernetServer server(6000);
 EthernetClient client;
 
-// ------------ ENTRY QR VARIABLES (Serial1) ------------
+// ------------ ENTRY QR VARIABLES ------------
 char enBuffer[QR_BUF];
+char lastEntryQR[QR_BUF];   // STORE LAST ENTRY
 uint8_t enIndex = 0;
 unsigned long enLastByteTime = 0;
 
-// ------------ EXIT QR VARIABLES (Serial2) ------------
+// ------------ EXIT QR VARIABLES ------------
 char exBuffer[QR_BUF];
+char lastExitQR[QR_BUF];    // STORE LAST EXIT
 uint8_t exIndex = 0;
 unsigned long exLastByteTime = 0;
 
@@ -38,19 +40,10 @@ IPAddress ip(192, 168, 60, 15);
 void trimString(char *str) {
   while (*str == '\r' || *str == '\n' || *str == ' ')
     memmove(str, str + 1, strlen(str));
+
   int len = strlen(str);
   while (len > 0 && (str[len - 1] == '\r' || str[len - 1] == '\n' || str[len - 1] == ' '))
     str[--len] = '\0';
-}
-
-void removeDuplicateQR(char *data) {
-  int len = strlen(data);
-  if (len % 2 == 0) {
-    int half = len / 2;
-    if (strncmp(data, data + half, half) == 0) {
-      data[half] = '\0';
-    }
-  }
 }
 
 void clearBuffer(char *buf, uint8_t &index) {
@@ -59,10 +52,7 @@ void clearBuffer(char *buf, uint8_t &index) {
 }
 
 void trimTCPBuffer(char *str) {
-  // Remove leading non-printable characters
   while (*str && *str <= 32) memmove(str, str + 1, strlen(str));
-
-  // Remove trailing non-printable characters
   int len = strlen(str);
   while (len > 0 && str[len - 1] <= 32) str[--len] = '\0';
 }
@@ -70,14 +60,17 @@ void trimTCPBuffer(char *str) {
 // ------------ SETUP ------------
 void setup() {
   Serial.begin(9600);
-  Serial1.begin(QR_BAUD);   // ENTRY
-  Serial2.begin(QR_BAUD);   // EXIT
+  Serial1.begin(QR_BAUD);
+  Serial2.begin(QR_BAUD);
 
   pinMode(RELAY, OUTPUT);
   digitalWrite(RELAY, HIGH);
 
-    pinMode(EXIT_RELAY, OUTPUT);
+  pinMode(EXIT_RELAY, OUTPUT);
   digitalWrite(EXIT_RELAY, HIGH);
+
+  memset(lastEntryQR, 0, QR_BUF);
+  memset(lastExitQR, 0, QR_BUF);
 
   Ethernet.begin(mac, ip);
   server.begin();
@@ -89,7 +82,7 @@ void setup() {
 // ------------ LOOP ------------
 void loop() {
 
-  // Check for new client
+  // Accept client
   if (!client || !client.connected()) {
     EthernetClient newClient = server.available();
     if (newClient) {
@@ -101,20 +94,31 @@ void loop() {
   // ================= ENTRY QR =================
   while (Serial1.available()) {
     char c = Serial1.read();
-    Serial.print(c);
     enLastByteTime = millis();
-    if (enIndex < QR_BUF - 1) enBuffer[enIndex++] = c;
+    if (enIndex < QR_BUF - 1)
+      enBuffer[enIndex++] = c;
   }
 
   if (enIndex > 0 && (millis() - enLastByteTime > qrTimeout)) {
     enBuffer[enIndex] = '\0';
     trimString(enBuffer);
-    removeDuplicateQR(enBuffer);
 
-    Serial.print("\nENTRY QR: "); Serial.println(enBuffer);
+    Serial.print("ENTRY QR: ");
+    Serial.println(enBuffer);
 
-    if (client && client.connected()) {
-      client.print("|ENQR-"); client.print(enBuffer); client.print("%\n");
+    // 🔥 DUPLICATE CHECK
+    if (strcmp(enBuffer, lastEntryQR) != 0) {
+
+      if (client && client.connected()) {
+        client.print("|ENQR-");
+        client.print(enBuffer);
+        client.print("%\n");
+      }
+
+      strcpy(lastEntryQR, enBuffer);  // STORE NEW QR
+    }
+    else {
+      Serial.println("Duplicate ENTRY ignored");
     }
 
     clearBuffer(enBuffer, enIndex);
@@ -123,20 +127,31 @@ void loop() {
   // ================= EXIT QR =================
   while (Serial2.available()) {
     char c = Serial2.read();
-    Serial.print(c);
     exLastByteTime = millis();
-    if (exIndex < QR_BUF - 1) exBuffer[exIndex++] = c;
+    if (exIndex < QR_BUF - 1)
+      exBuffer[exIndex++] = c;
   }
 
   if (exIndex > 0 && (millis() - exLastByteTime > qrTimeout)) {
     exBuffer[exIndex] = '\0';
     trimString(exBuffer);
-    removeDuplicateQR(exBuffer);
 
-    Serial.print("\nEXIT QR: "); Serial.println(exBuffer);
+    Serial.print("EXIT QR: ");
+    Serial.println(exBuffer);
 
-    if (client && client.connected()) {
-      client.print("|EXQR-"); client.print(exBuffer); client.print("%\n");
+    // 🔥 DUPLICATE CHECK
+    if (strcmp(exBuffer, lastExitQR) != 0) {
+
+      if (client && client.connected()) {
+        client.print("|EXQR-");
+        client.print(exBuffer);
+        client.print("%\n");
+      }
+
+      strcpy(lastExitQR, exBuffer);  // STORE NEW QR
+    }
+    else {
+      Serial.println("Duplicate EXIT ignored");
     }
 
     clearBuffer(exBuffer, exIndex);
@@ -153,29 +168,39 @@ void loop() {
 
   // ================= TCP COMMAND READ =================
   while (client && client.connected() && client.available()) {
-    char c = client.read();
-    Serial.print(c);
-    if (tcpIndex < TCP_BUF - 1) tcpBuffer[tcpIndex++] = c;
-if (c == '%') {
-  tcpBuffer[tcpIndex] = '\0';
-  trimTCPBuffer(tcpBuffer);
-  Serial.print("\nTCP RECEIVED: "); 
-  Serial.println(tcpBuffer);
 
-if (strcmp(tcpBuffer, "|OPENX%") == 0) {
-    Serial.println("OPEN EXIT RELAY");
-    client.print("|OK%\n");
-    digitalWrite(EXIT_RELAY,LOW);
-    delay(1000);
-    digitalWrite(EXIT_RELAY, HIGH);
-}
-else if (strcmp(tcpBuffer, "|OPEN%") == 0) {
-    Serial.println("OPEN ENTRY RELAY");
-    client.print("|OK%\n");
-    digitalWrite(RELAY,LOW);
-    delay(1000);
-    digitalWrite(RELAY, HIGH);
-}
+    char c = client.read();
+
+    if (tcpIndex < TCP_BUF - 1)
+      tcpBuffer[tcpIndex++] = c;
+
+    if (c == '%') {
+
+      tcpBuffer[tcpIndex] = '\0';
+      trimTCPBuffer(tcpBuffer);
+
+      Serial.print("TCP RECEIVED: ");
+      Serial.println(tcpBuffer);
+
+      if (strcmp(tcpBuffer, "|OPENX%") == 0) {
+
+        Serial.println("OPEN EXIT RELAY");
+        client.print("|OK%\n");
+
+        digitalWrite(EXIT_RELAY, LOW);
+        delay(1000);
+        digitalWrite(EXIT_RELAY, HIGH);
+      }
+
+      else if (strcmp(tcpBuffer, "|OPEN%") == 0) {
+
+        Serial.println("OPEN ENTRY RELAY");
+        client.print("|OK%\n");
+
+        digitalWrite(RELAY, LOW);
+        delay(1000);
+        digitalWrite(RELAY, HIGH);
+      }
 
       memset(tcpBuffer, 0, TCP_BUF);
       tcpIndex = 0;
