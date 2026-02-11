@@ -13,17 +13,19 @@ EthernetClient client;
 
 // ------------ ENTRY QR VARIABLES ------------
 char enBuffer[QR_BUF];
-char lastEntryQR[QR_BUF];   // STORE LAST ENTRY
 uint8_t enIndex = 0;
 unsigned long enLastByteTime = 0;
 
 // ------------ EXIT QR VARIABLES ------------
 char exBuffer[QR_BUF];
-char lastExitQR[QR_BUF];    // STORE LAST EXIT
 uint8_t exIndex = 0;
 unsigned long exLastByteTime = 0;
 
 const unsigned long qrTimeout = 25;
+
+// ------------ USER STATE ------------
+char currentUser[QR_BUF];   // Store last active user
+bool userInside = false;    // Track inside/outside state
 
 // ------------ TCP VARIABLES ------------
 char tcpBuffer[TCP_BUF];
@@ -52,13 +54,17 @@ void clearBuffer(char *buf, uint8_t &index) {
 }
 
 void trimTCPBuffer(char *str) {
-  while (*str && *str <= 32) memmove(str, str + 1, strlen(str));
+  while (*str && *str <= 32)
+    memmove(str, str + 1, strlen(str));
+
   int len = strlen(str);
-  while (len > 0 && str[len - 1] <= 32) str[--len] = '\0';
+  while (len > 0 && str[len - 1] <= 32)
+    str[--len] = '\0';
 }
 
 // ------------ SETUP ------------
 void setup() {
+
   Serial.begin(9600);
   Serial1.begin(QR_BAUD);
   Serial2.begin(QR_BAUD);
@@ -69,8 +75,7 @@ void setup() {
   pinMode(EXIT_RELAY, OUTPUT);
   digitalWrite(EXIT_RELAY, HIGH);
 
-  memset(lastEntryQR, 0, QR_BUF);
-  memset(lastExitQR, 0, QR_BUF);
+  memset(currentUser, 0, QR_BUF);
 
   Ethernet.begin(mac, ip);
   server.begin();
@@ -100,25 +105,24 @@ void loop() {
   }
 
   if (enIndex > 0 && (millis() - enLastByteTime > qrTimeout)) {
+
     enBuffer[enIndex] = '\0';
     trimString(enBuffer);
 
     Serial.print("ENTRY QR: ");
     Serial.println(enBuffer);
 
-    // 🔥 DUPLICATE CHECK
-    if (strcmp(enBuffer, lastEntryQR) != 0) {
-
+    // Duplicate check
+    if (strcmp(enBuffer, currentUser) == 0 && userInside == true) {
+      Serial.println("Duplicate ENTRY - User already inside");
+    }
+    else {
       if (client && client.connected()) {
         client.print("|ENQR-");
         client.print(enBuffer);
         client.print("%\n");
       }
-
-      strcpy(lastEntryQR, enBuffer);  // STORE NEW QR
-    }
-    else {
-      Serial.println("Duplicate ENTRY ignored");
+      strcpy(currentUser, enBuffer);
     }
 
     clearBuffer(enBuffer, enIndex);
@@ -133,25 +137,23 @@ void loop() {
   }
 
   if (exIndex > 0 && (millis() - exLastByteTime > qrTimeout)) {
+
     exBuffer[exIndex] = '\0';
     trimString(exBuffer);
 
     Serial.print("EXIT QR: ");
     Serial.println(exBuffer);
 
-    // 🔥 DUPLICATE CHECK
-    if (strcmp(exBuffer, lastExitQR) != 0) {
-
+    if (strcmp(exBuffer, currentUser) == 0 && userInside == false) {
+      Serial.println("Duplicate EXIT - User already outside");
+    }
+    else {
       if (client && client.connected()) {
         client.print("|EXQR-");
         client.print(exBuffer);
         client.print("%\n");
       }
-
-      strcpy(lastExitQR, exBuffer);  // STORE NEW QR
-    }
-    else {
-      Serial.println("Duplicate EXIT ignored");
+      strcpy(currentUser, exBuffer);
     }
 
     clearBuffer(exBuffer, exIndex);
@@ -182,17 +184,8 @@ void loop() {
       Serial.print("TCP RECEIVED: ");
       Serial.println(tcpBuffer);
 
-      if (strcmp(tcpBuffer, "|OPENX%") == 0) {
-
-        Serial.println("OPEN EXIT RELAY");
-        client.print("|OK%\n");
-
-        digitalWrite(EXIT_RELAY, LOW);
-        delay(1000);
-        digitalWrite(EXIT_RELAY, HIGH);
-      }
-
-      else if (strcmp(tcpBuffer, "|OPEN%") == 0) {
+      // ENTRY OPEN
+      if (strcmp(tcpBuffer, "|OPEN%") == 0) {
 
         Serial.println("OPEN ENTRY RELAY");
         client.print("|OK%\n");
@@ -200,6 +193,21 @@ void loop() {
         digitalWrite(RELAY, LOW);
         delay(1000);
         digitalWrite(RELAY, HIGH);
+
+        userInside = true;   // Mark user inside
+      }
+
+      // EXIT OPEN
+      else if (strcmp(tcpBuffer, "|OPENX%") == 0) {
+
+        Serial.println("OPEN EXIT RELAY");
+        client.print("|OK%\n");
+
+        digitalWrite(EXIT_RELAY, LOW);
+        delay(1000);
+        digitalWrite(EXIT_RELAY, HIGH);
+
+        userInside = false;  // Mark user outside
       }
 
       memset(tcpBuffer, 0, TCP_BUF);
