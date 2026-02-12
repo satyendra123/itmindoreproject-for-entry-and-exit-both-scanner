@@ -88,14 +88,18 @@ void setup() {
 // ------------ LOOP ------------
 void loop() {
 
-  // Accept client
-  if (!client || !client.connected()) {
+if (client && !client.connected()) {
+    Serial.println("Client disconnected");
+    client.stop();
+}
+
+if (!client) {
     EthernetClient newClient = server.available();
     if (newClient) {
-      client = newClient;
-      Serial.println("Client connected!");
+        client = newClient;
+        Serial.println("Client connected!");
     }
-  }
+}
 
   // ================= ENTRY QR =================
   while (Serial1.available()) {
