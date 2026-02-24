@@ -1,0 +1,11 @@
+import socket
+try:
+    with socket.create_connection((192.168.60.17, 6000), timeout=5) as s:
+        print(f"Connected to Arduino at {ARDUINO_IP}:{ARDUINO_PORT}")
+        s.sendall(b"|OPEN%")
+        reply = s.recv(1024)
+        if reply:
+            print("Reply:", reply.decode().strip())
+
+except Exception as e:
+    print("Error:", e)
