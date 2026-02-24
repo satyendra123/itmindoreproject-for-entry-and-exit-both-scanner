@@ -1,3 +1,4 @@
+'''
 import socket
 try:
     with socket.create_connection((192.168.60.17, 6000), timeout=5) as s:
@@ -9,3 +10,68 @@ try:
 
 except Exception as e:
     print("Error:", e)
+'''
+
+import socket
+import time
+
+ARDUINO_IP = "192.168.60.17"
+ARDUINO_PORT = 6000
+
+def extract_packets(buffer):
+    packets = []
+    while "%" in buffer:
+        pkt, buffer = buffer.split("%", 1)
+        pkt = pkt.strip()
+        if pkt:
+            packets.append(pkt + "%")
+    return packets, buffer
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.connect((ARDUINO_IP, ARDUINO_PORT))
+    s.settimeout(1)
+    print(f"Connected to Arduino at {ARDUINO_IP}:{ARDUINO_PORT}")
+
+    waiting_open_ack = False
+    rx_buffer = ""
+
+    s.sendall(b"|OPEN%")
+    print("Sent: |OPEN%")
+    waiting_open_ack = True
+
+    while True:
+        try:
+            data = s.recv(1024)
+            if not data:
+                print("Disconnected by Arduino")
+                break
+
+            rx_buffer += data.decode("utf-8", errors="ignore")
+            packets, rx_buffer = extract_packets(rx_buffer)
+
+            for pkt in packets:
+                print("Received:", pkt)
+
+                if pkt == "|HLT%":
+                    s.sendall(b"|OK%")
+                    print("Sent: |OK% (heartbeat reply)")
+                    continue
+
+                if pkt == "|OK%":
+                    if waiting_open_ack:
+                        print("Gate open ACK received")
+                        waiting_open_ack = False
+                    else:
+                        print("General OK received")
+                    continue
+
+                if pkt == "|ERR%":
+                    print("Arduino returned error")
+                    waiting_open_ack = False
+                    continue
+
+                qr_data = pkt.rstrip("%").strip()
+                print(f"QR Data Received: {qr_data}")
+
+        except socket.timeout:
+            pass
